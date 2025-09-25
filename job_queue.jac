@@ -75,15 +75,15 @@ impl Worker.work {
 
             if success {
                 here.status = "done";
-                print(f"[{self.name}] ✅ Completed {here.id}");
+                print(f"[{self.name}]  Completed {here.id}");
             } else {
                 here.attempts = here.attempts + 1;
                 if here.attempts < here.max_attempts {
                     here.status = "pending";   # put it back in the queue
-                    print(f"[{self.name}] ❌ Failed {here.id}. Retrying ({here.attempts}/{here.max_attempts})");
+                    print(f"[{self.name}]  Failed {here.id}. Retrying ({here.attempts}/{here.max_attempts})");
                 } else {
                     here.status = "failed";
-                    print(f"[{self.name}] 🛑 Gave up on {here.id} after {here.attempts} attempts");
+                    print(f"[{self.name}]  Gave up on {here.id} after {here.attempts} attempts");
                 }
             }
         }
