@@ -1,98 +1,166 @@
-"""A Simple Job Queue with Retries (Jac)"""
+node queue {
+    has name: str;
+}
 
-import random;
-
-# A queue "index" node that points to the first job in a singly linked list.
-node queue { has name: str; }
-
-# Each job is a node in the list; fields track state and retry attempts.
 node job {
     has id: str;
     has payload: str;
-    has status: str = "pending";      # pending | running | done | failed
-    has attempts: int = 0;
-    has max_attempts: int = 3;
-    has owner: str = "";              # which worker last claimed it (informational)
+    has status: str;
+    has attempts: int;
+    has max_attempts: int;
+    has owner: str;
+    has notes: list;
 }
 
-# A worker walker that traverses the queue and processes jobs.
 walker Worker {
     has name: str;
 
-    can start with queue entry;   # enter via the queue head
-    can work  with job entry;     # process an individual job node
+    can start with entry;
+    can work  with job entry;
+
+    def generate_ai_note(
+        job_id: str,
+        payload: str,
+        status: str,
+        attempts: int,
+        max_attempts: int
+    ) -> str {
+        if status == "done" {
+            return "Job " + job_id + " completed successfully; payload " + payload + ".";
+        } else {
+            let msg = "Job " + job_id + " failed after " + str(attempts) + "/" + str(max_attempts) + " attempts.";
+            if attempts < max_attempts {
+                msg = msg + " Next: check recent logs and retry.";
+            } else {
+                msg = msg + " Next: collect error output and escalate.";
+            }
+            return msg;
+        }
+    }
 }
 
-# --- Demo wiring: make one queue, chain some jobs, spawn 2 workers ---
+walker QueueReporter {
+    can report with entry;
+}
 
-with entry:__main__ {
-    let q = root ++> queue("main");
-    let j1 = q ++> job("job-1", "resize-image-001.jpg");
-    let j2 = j1 ++> job("job-2", "generate-report-Q3.csv");
-    let j3 = j2 ++> job("job-3", "email-campaign-4821");
-    let j4 = j3 ++> job("job-4", "backup-database-users");
+with entry {
+    let q  = root ++> queue("main");
 
-    # Spawn workers ON the queue node
+    let j1 = q  ++> job("job-1", "resize-image-001.jpg", "pending", 0, 3, "", []);
+    let j2 = j1 ++> job("job-2", "generate-report-Q3.csv", "pending", 0, 3, "", []);
+    let j3 = j2 ++> job("job-3", "email-campaign-4821", "pending", 0, 3, "", []);
+    let j4 = j3 ++> job("job-4", "backup-database-users", "pending", 0, 3, "", []);
+
     q spawn Worker("W1");
     q spawn Worker("W2");
-
+    q spawn QueueReporter();
 }
 
-# --- Worker behavior ---
-
 impl Worker.start {
-    # At the queue node: if it has a next edge (head job), visit it; otherwise we're done.
     if [-->] {
         visit [-->];
     } else {
-        print(f"[{self.name}] Queue empty. Nothing to do.");
+        print("[" + self.name + "] Queue empty. Nothing to do.");
         disengage;
     }
 }
 
 impl Worker.work {
-    # Quick exit if this job has already finished.
     if here.status == "done" or here.status == "failed" {
-        # Move to next job in the chain if present; else back to queue to check again.
         if [-->] {
             visit [-->];
         } else {
-            # No next job; jump back to queue head to see if anything new appeared.
-            visit [root --> (`?queue)];
+            visit root;
+            
+            if [-->] { visit [-->]; }
+            else { disengage; }
         }
     } else {
-        # Attempt to "claim" the job if it's pending. If another worker already set it
-        # to running, we'll skip it on the next tick.
         if here.status == "pending" {
             here.status = "running";
             here.owner = self.name;
-            print(f"[{self.name}] Claimed {here.id} ({here.payload}). Attempts={here.attempts}/{here.max_attempts}");
+            print("[" + self.name + "] Claimed " + here.id + " (" + here.payload + "). Attempts="
+                  + str(here.attempts) + "/" + str(here.max_attempts));
         }
 
         if here.status == "running" and here.owner == self.name {
-            # Simulate doing the work. Tune success probability as desired.
-            let success = random.random() < 0.7;
+           
+            let success = here.attempts > 0;
 
             if success {
                 here.status = "done";
-                print(f"[{self.name}]  Completed {here.id}");
+                print("[" + self.name + "]  Completed " + here.id);
+
+                let note = self.generate_ai_note(
+                    job_id=here.id,
+                    payload=here.payload,
+                    status="done",
+                    attempts=here.attempts,
+                    max_attempts=here.max_attempts
+                );
+                here.notes.append(note);
+                print("[" + self.name + "]  Note: " + note);
+
             } else {
                 here.attempts = here.attempts + 1;
                 if here.attempts < here.max_attempts {
-                    here.status = "pending";   # put it back in the queue
-                    print(f"[{self.name}]  Failed {here.id}. Retrying ({here.attempts}/{here.max_attempts})");
+                    here.status = "pending";
+                    print("[" + self.name + "]  Failed " + here.id + ". Retrying ("
+                          + str(here.attempts) + "/" + str(here.max_attempts) + ")");
                 } else {
                     here.status = "failed";
-                    print(f"[{self.name}]  Gave up on {here.id} after {here.attempts} attempts");
+                    print("[" + self.name + "]  Gave up on " + here.id + " after "
+                          + str(here.attempts) + " attempts");
+
+                    let note2 = self.generate_ai_note(
+                        job_id=here.id,
+                        payload=here.payload,
+                        status="failed",
+                        attempts=here.attempts,
+                        max_attempts=here.max_attempts
+                    );
+                    here.notes.append(note2);
+                    print("[" + self.name + "]  Note: " + note2);
                 }
             }
         }
 
-        # Move along the chain; if no next job, bounce to the queue head to scan again.
-        if [-->] {
-            visit [-->];
-        } else {
-            visit [root --> (`?queue)];
+        if [-->] { visit [-->]; }
+        else {
+            visit root;
+            if [-->] { visit [-->]; }
+            else { disengage; }
         }
     }
+}
+
+impl QueueReporter.report {
+    let pending = 0;
+    let running = 0;
+    let done = 0;
+    let failed = 0;
+
+    if [-->] {
+        visit [-->];
+    } else {
+        print("[Reporter] Queue empty.");
+        disengage;
+    }
+
+    while ( 1 == 1 ) {
+        if here is job{
+            if here.status == "pending" { pending = pending + 1; }
+            if here.status == "running" { running = running + 1; }
+            if here.status == "done"    { done    = done    + 1; }
+            if here.status == "failed"  { failed  = failed  + 1; }
+
+            if [-->] { visit [-->]; }
+            else { break; }
+        } else { break; }
+    }
+
+    let out = "Pending: " + str(pending) + ", Running: " + str(running) +
+              ", Done: " + str(done) + ", Failed: " + str(failed) +
+              "\nTips: keep max_attempts reasonable; prefer idempotent steps to allow safe retries.";
+    print("\n=== QUEUE SUMMARY ===\n" + out + "\n");
 }
